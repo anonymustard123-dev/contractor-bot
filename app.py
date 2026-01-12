@@ -14,8 +14,8 @@ from reportlab.lib.colors import HexColor
 # 1. SETUP & CONFIG
 # ==========================================
 st.set_page_config(
-    page_title="Nano Banana Architect", 
-    page_icon="🍌", 
+    page_title="Room Visualizer", 
+    page_icon="🚪", 
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -24,49 +24,54 @@ st.set_page_config(
 api_key = os.getenv("GOOGLE_API_KEY")
 
 if not api_key:
-    st.error("⚠️ Google API Key missing. Add GOOGLE_API_KEY to Railway variables.")
+    st.error("⚠️ API Key missing. Please check your system variables.")
     st.stop()
 
-# Initialize the Unified Client
+# Initialize Client
 client = genai.Client(api_key=api_key)
-
-# The Model ID from your documentation
-MODEL_ID = "gemini-3-pro-image-preview"
+MODEL_ID = "gemini-2.0-pro-exp-02-05" # Updated to latest stable experimental if 3-preview is fussy
 
 # ==========================================
 # 2. UI STYLING
 # ==========================================
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
     
     :root {
-        --primary: #FFD700; /* Banana Yellow */
+        --primary: #000000;
         --text: #1a1a1a;
-        --bg: #fafafa;
+        --bg: #ffffff;
     }
 
     .stApp {
         background-color: var(--bg);
-        font-family: 'Space Grotesk', sans-serif;
+        font-family: 'Inter', sans-serif;
         color: var(--text);
     }
     
     .room-card {
         background: white;
-        border: 2px solid #f0f0f0;
-        border-radius: 24px;
+        border: 1px solid #e0e0e0;
+        border-radius: 12px;
         padding: 24px;
-        box-shadow: 0 10px 30px -10px rgba(0,0,0,0.05);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
         margin-bottom: 20px;
     }
 
+    /* Clean Header */
+    .header-text h1 {
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        margin-bottom: 0;
+    }
+    
     /* Buttons */
     div.stButton > button {
         background-color: #111 !important;
         color: white !important;
-        border-radius: 14px !important;
-        height: 55px !important;
+        border-radius: 8px !important;
+        height: 50px !important;
         font-weight: 600 !important;
         border: none !important;
         width: 100%;
@@ -75,15 +80,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. LOGIC: GEMINI 3 NATIVE
+# 3. LOGIC: GENERATION
 # ==========================================
 
 def generate_renovation(input_image, room_type, category, user_description):
     """
-    Calls Gemini 3 with High Thinking Level for structural reasoning.
+    Calls the AI Model directly with the list [image, text].
     """
     
-    # 1. Construct the Multimodal Prompt
     prompt_text = f"""
     Act as a professional architectural visualizer.
     Task: Renovate this {room_type}.
@@ -97,35 +101,26 @@ def generate_renovation(input_image, room_type, category, user_description):
     """
     
     try:
-        # 2. Call the Model
-        # Using the new 'google-genai' SDK syntax
+        # FIX: We pass the list directly. No 'types.Part' wrapper needed.
         response = client.models.generate_content(
             model=MODEL_ID,
-            contents=[
-                types.Part.from_text(prompt_text),
-                types.Part.from_image(input_image)
-            ],
+            contents=[input_image, prompt_text],
             config=types.GenerateContentConfig(
-                # Enabling High Thinking for complex spatial reasoning
-                # (As per Nano Banana docs)
-                thinking_level="HIGH", 
                 temperature=0.7
             )
         )
         
-        # 3. Handle the Image Response
-        # Gemini usually returns the image as inline_data in the parts
+        # Handle the Image Response
         if response.candidates and response.candidates[0].content.parts:
             for part in response.candidates[0].content.parts:
                 if part.inline_data:
-                    # Decode the byte string
                     img_data = base64.b64decode(part.inline_data.data)
                     return Image.open(io.BytesIO(img_data)), None
         
-        return None, "Model completed thinking but returned no image data."
+        return None, "The system processed the request but returned no image."
 
     except Exception as e:
-        return None, f"Gemini 3 Error: {str(e)}"
+        return None, f"Visualization Error: {str(e)}"
 
 def create_pdf_report(before_img, after_img, summary_text):
     """ Generates PDF Report """
@@ -147,7 +142,7 @@ def create_pdf_report(before_img, after_img, summary_text):
         b.seek(0)
         return RLImage(b, width=250, height=200)
 
-    data = [[prep(before_img), prep(after_img)], [Paragraph("Before", styles["Normal"]), Paragraph("After (Gemini 3)", styles["Normal"])]]
+    data = [[prep(before_img), prep(after_img)], [Paragraph("Before", styles["Normal"]), Paragraph("Proposed Design", styles["Normal"])]]
     t = Table(data, colWidths=[260, 260])
     t.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER')]))
     story.append(t)
@@ -161,8 +156,7 @@ def create_pdf_report(before_img, after_img, summary_text):
 # ==========================================
 st.markdown("""
 <div class="header-text" style="text-align: center; margin-bottom: 30px;">
-    <h1>🍌 Nano Banana Architect</h1>
-    <p>Powered by Gemini 3 (High Thinking Mode)</p>
+    <h1>🚪 Room Visualizer</h1>
 </div>
 """, unsafe_allow_html=True)
 
@@ -181,7 +175,7 @@ if uploaded_file and desc:
     input_image = Image.open(uploaded_file)
     
     if st.button("✨ Visualize"):
-        with st.spinner("Gemini 3 is thinking (Spatial Reasoning)..."):
+        with st.spinner("Analyzing structure and generating proposal..."):
             
             result_image, error = generate_renovation(input_image, room_type, category, desc)
             
@@ -199,7 +193,7 @@ if st.session_state.get('done'):
     st.markdown('<div class="room-card">', unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1: st.image(st.session_state.before, caption="Original", use_container_width=True)
-    with c2: st.image(st.session_state.after, caption="Gemini 3 Proposal", use_container_width=True)
+    with c2: st.image(st.session_state.after, caption="Proposed Design", use_container_width=True)
     
     pdf_bytes = create_pdf_report(st.session_state.before, st.session_state.after, st.session_state.summary)
     st.download_button("Download Report", pdf_bytes, "report.pdf", "application/pdf")
