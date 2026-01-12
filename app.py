@@ -28,6 +28,11 @@ st.markdown("""
         footer {visibility: hidden;}
         header {visibility: hidden;}
         [data-testid="stToolbar"] {visibility: hidden;}
+        /* Improve touch targets on mobile */
+        button {
+            min-height: 50px; 
+            margin-top: 10px;
+        }
     </style>
     <link rel="manifest" href="app/static/manifest.json">
     <meta name="apple-mobile-web-app-capable" content="yes">
@@ -45,26 +50,24 @@ IMAGE_MODEL_ID = "gemini-3-pro-image-preview"
 TEXT_MODEL_ID = "gemini-2.0-flash"
 
 # ==========================================
-# 2. UTILITY: IMAGE OPTIMIZATION (CRITICAL FIX)
+# 2. STATE MANAGEMENT (The Fix for "Double Clicks")
 # ==========================================
-def compress_image(image, max_size=(1024, 1024)):
-    """
-    Resizes large mobile photos to prevent OOM crashes on Railway.
-    """
-    # Create a copy to avoid modifying the original
-    img = image.copy()
-    
-    # Convert RGBA (PNG) to RGB (JPG) to save space
-    if img.mode in ("RGBA", "P"):
-        img = img.convert("RGB")
-        
-    # Resize if larger than max_size while keeping aspect ratio
-    img.thumbnail(max_size, Image.Resampling.LANCZOS)
-    return img
+# We initialize all variables once so they survive "refreshes"
+if 'current_view' not in st.session_state: st.session_state.current_view = 'input' # input, processing, result
+if 'input_img' not in st.session_state: st.session_state.input_img = None
+if 'result_img' not in st.session_state: st.session_state.result_img = None
+if 'summary' not in st.session_state: st.session_state.summary = ""
+if 'shop_list' not in st.session_state: st.session_state.shop_list = []
+if 'pdf_data' not in st.session_state: st.session_state.pdf_data = None
 
 # ==========================================
-# 3. LOGIC: GENERATION & SHOPPING
+# 3. UTILITY FUNCTIONS
 # ==========================================
+def compress_image(image, max_size=(1024, 1024)):
+    img = image.copy()
+    if img.mode in ("RGBA", "P"): img = img.convert("RGB")
+    img.thumbnail(max_size, Image.Resampling.LANCZOS)
+    return img
 
 def generate_shopping_list(input_image):
     prompt = """
@@ -72,8 +75,7 @@ def generate_shopping_list(input_image):
     Return ONLY a raw JSON object:
     [
         {"item": "Material Name", "query": "buy Material Name online"},
-        {"item": "Material Name 2", "query": "buy Material Name 2 online"},
-        {"item": "Material Name 3", "query": "buy Material Name 3 online"}
+        {"item": "Material Name 2", "query": "buy Material Name 2 online"}
     ]
     """
     try:
@@ -86,13 +88,13 @@ def generate_shopping_list(input_image):
     except:
         return []
 
-def generate_smart_summary(room_type, category, user_description):
-    prompt = f"Act as an interior designer. Summarize this {room_type} {category} project in one professional sentence. User notes: {user_description}"
+def generate_smart_summary(room, category, desc):
+    prompt = f"Act as an interior designer. Summarize this {room} {category} project in one professional sentence. User notes: {desc}"
     try:
         response = client.models.generate_content(model=TEXT_MODEL_ID, contents=prompt)
         return response.text.strip()
     except:
-        return f"Renovation of {room_type} updating {category}."
+        return f"Renovation of {room} updating {category}."
 
 def generate_renovation(input_image, prompt_text):
     full_prompt = f"Act as an architectural visualizer. Edit the image: {prompt_text}. Maintain geometry. Photorealistic."
@@ -100,10 +102,7 @@ def generate_renovation(input_image, prompt_text):
         response = client.models.generate_content(
             model=IMAGE_MODEL_ID,
             contents=[input_image, full_prompt],
-            config=types.GenerateContentConfig(
-                response_modalities=["TEXT", "IMAGE"],
-                temperature=0.7,
-            )
+            config=types.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"], temperature=0.7)
         )
         if response.candidates:
             for part in response.candidates[0].content.parts:
@@ -124,7 +123,6 @@ def create_pdf_report(before_img, after_img, summary_text, shopping_list):
     title_style = ParagraphStyle('Title', parent=styles['Heading1'], color=HexColor('#0f172a'), alignment=1, fontSize=24)
     story.append(Paragraph("Renovation Proposal", title_style))
     story.append(Spacer(1, 12))
-
     story.append(Paragraph("<b>Project Scope:</b>", styles["Heading3"]))
     story.append(Paragraph(summary_text, styles["Normal"]))
     story.append(Spacer(1, 20))
@@ -157,85 +155,156 @@ def create_pdf_report(before_img, after_img, summary_text, shopping_list):
     return buffer
 
 # ==========================================
-# 4. INTERFACE
+# 4. CALLBACKS (The Logic Engine)
+# ==========================================
+def handle_upload():
+    """Immediately saves uploaded file to session state"""
+    if st.session_state.uploader:
+        img = Image.open(st.session_state.uploader)
+        st.session_state.input_img = compress_image(img)
+
+def handle_camera():
+    """Immediately saves camera photo to session state"""
+    if st.session_state.camera:
+        img = Image.open(st.session_state.camera)
+        st.session_state.input_img = compress_image(img)
+
+def run_generation_callback():
+    """Runs the AI pipeline and locks results into state"""
+    if st.session_state.input_img:
+        st.session_state.current_view = 'processing'
+        
+        # Inputs from widgets
+        r = st.session_state.room_input
+        c = st.session_state.cat_input
+        d = st.session_state.desc_input
+        
+        prompt = f"Renovate {r}. Update {c}. Details: {d}"
+        
+        # 1. Image
+        res, err = generate_renovation(st.session_state.input_img, prompt)
+        
+        if res:
+            st.session_state.result_img = res
+            st.session_state.summary = generate_smart_summary(r, c, d)
+            st.session_state.shop_list = generate_shopping_list(res)
+            # Generate PDF bytes immediately so download is ready
+            st.session_state.pdf_data = create_pdf_report(
+                st.session_state.input_img, res, st.session_state.summary, st.session_state.shop_list
+            )
+            st.session_state.current_view = 'result'
+        else:
+            st.error(f"Error: {err}")
+            st.session_state.current_view = 'input'
+
+def run_refinement_callback():
+    """Handles the chat refinement"""
+    chat_text = st.session_state.chat_input
+    if chat_text and st.session_state.result_img:
+        new_res, err = generate_renovation(st.session_state.result_img, chat_text)
+        if new_res:
+            st.session_state.result_img = new_res
+            # Regenerate PDF with new image
+            st.session_state.pdf_data = create_pdf_report(
+                st.session_state.input_img, new_res, st.session_state.summary, st.session_state.shop_list
+            )
+
+# ==========================================
+# 5. UI RENDER
 # ==========================================
 st.markdown('<div class="header-text" style="text-align: center; margin-bottom: 20px;"><h1>🏠 Room Visualizer</h1></div>', unsafe_allow_html=True)
 
-# --- INPUTS ---
-st.markdown('<div class="room-card">', unsafe_allow_html=True)
-tab1, tab2 = st.tabs(["📂 Upload", "📸 Camera"])
-raw_input = None
-
-with tab1:
-    u_file = st.file_uploader("Upload", type=['jpg', 'png', 'jpeg'], label_visibility="collapsed")
-    if u_file: raw_input = Image.open(u_file)
-with tab2:
-    c_file = st.camera_input("Take Photo")
-    if c_file: raw_input = Image.open(c_file)
-
-# PROCESS & COMPRESS INPUT IMMEDIATELY
-input_image = None
-if raw_input:
-    # Compressing down to 1024px max dimension
-    input_image = compress_image(raw_input)
-    st.image(input_image, caption="Site Photo", width=300)
-
-st.markdown('</div>', unsafe_allow_html=True)
-
-if input_image:
+# -----------------
+# VIEW 1: INPUT
+# -----------------
+# We use st.empty() containers to swap views cleanly
+if st.session_state.current_view == 'input':
     st.markdown('<div class="room-card">', unsafe_allow_html=True)
-    c1, c2 = st.columns(2)
-    with c1: room = st.selectbox("Room", ["Living Room", "Kitchen", "Bathroom", "Bedroom", "Patio"])
-    with c2: cat = st.selectbox("Category", ["Paint", "Flooring", "Cabinets", "Lighting", "Full Remodel"])
     
-    desc = st.text_area("Design Plan:", placeholder="e.g. Modern white oak floors")
+    # TABS
+    tab1, tab2 = st.tabs(["📂 Upload", "📸 Camera"])
     
-    if st.button("✨ Generate Proposal"):
-        with st.spinner("Designing & Sourcing Materials..."):
-            prompt = f"Renovate {room}. Update {cat}. Details: {desc}"
-            
-            # 1. Generate Image (Using optimized input_image)
-            res_img, err = generate_renovation(input_image, prompt)
-            
-            if res_img:
-                # 2. Generate Summary & Shopping List
-                summ = generate_smart_summary(room, cat, desc)
-                shop_list = generate_shopping_list(res_img)
-                
-                st.session_state.before = input_image
-                st.session_state.after = res_img
-                st.session_state.summary = summ
-                st.session_state.shop = shop_list
-                st.session_state.done = True
-                st.rerun()
-            elif err:
-                st.error(err)
+    with tab1:
+        st.file_uploader(
+            "Upload", 
+            type=['jpg', 'png', 'jpeg'], 
+            key="uploader", 
+            label_visibility="collapsed",
+            on_change=handle_upload  # <--- AUTO SAVE ON UPLOAD
+        )
+    with tab2:
+        st.camera_input(
+            "Take Photo", 
+            key="camera", 
+            on_change=handle_camera # <--- AUTO SAVE ON SNAP
+        )
+
+    # Show Preview if we have an image
+    if st.session_state.input_img:
+        st.image(st.session_state.input_img, caption="Selected Site Photo", width=300)
+        
+        st.markdown("---")
+        c1, c2 = st.columns(2)
+        with c1: st.selectbox("Room", ["Living Room", "Kitchen", "Bathroom", "Bedroom", "Patio"], key="room_input")
+        with c2: st.selectbox("Category", ["Paint", "Flooring", "Cabinets", "Lighting", "Full Remodel"], key="cat_input")
+        
+        st.text_area("Design Plan:", placeholder="e.g. Modern white oak floors", key="desc_input")
+        
+        # THE BUTTON WITH CALLBACK
+        st.button("✨ Generate Proposal", on_click=run_generation_callback, use_container_width=True)
+
     st.markdown('</div>', unsafe_allow_html=True)
 
-# --- RESULTS ---
-if st.session_state.get('done'):
-    st.markdown('<div class="room-card">', unsafe_allow_html=True)
-    st.write("### Proposal")
-    
-    col1, col2 = st.columns(2)
-    with col1: st.image(st.session_state.before, caption="Before", use_container_width=True)
-    with col2: st.image(st.session_state.after, caption="After", use_container_width=True)
-    
-    if st.session_state.shop:
-        st.write("#### 🛒 Material List")
-        for item in st.session_state.shop:
-            url = f"https://www.google.com/search?q={item['query'].replace(' ', '+')}&tbm=shop"
-            st.markdown(f"- [{item['item']}]({url})")
+# -----------------
+# VIEW 2: PROCESSING (Visual Feedback)
+# -----------------
+elif st.session_state.current_view == 'processing':
+    st.info("🎨 Designing your room... This takes about 10-15 seconds.")
+    # The callback handles the logic; this just holds the screen until re-run
 
-    pdf_data = create_pdf_report(st.session_state.before, st.session_state.after, st.session_state.summary, st.session_state.shop)
-    st.download_button("📄 Download PDF (with Links)", pdf_data, "proposal.pdf", "application/pdf", use_container_width=True)
+# -----------------
+# VIEW 3: RESULTS
+# -----------------
+elif st.session_state.current_view == 'result':
+    st.markdown('<div class="room-card">', unsafe_allow_html=True)
+    
+    # Images
+    col1, col2 = st.columns(2)
+    with col1: st.image(st.session_state.input_img, caption="Before", use_container_width=True)
+    with col2: st.image(st.session_state.result_img, caption="After", use_container_width=True)
+    
+    # Shopping List
+    if st.session_state.shop_list:
+        with st.expander("🛒 View Material List"):
+            for item in st.session_state.shop_list:
+                url = f"https://www.google.com/search?q={item['query'].replace(' ', '+')}&tbm=shop"
+                st.markdown(f"- [{item['item']}]({url})")
+
+    # PDF Download
+    if st.session_state.pdf_data:
+        st.download_button(
+            label="📄 Download Proposal PDF",
+            data=st.session_state.pdf_data,
+            file_name="proposal.pdf",
+            mime="application/pdf",
+            use_container_width=True
+        )
     
     st.markdown("---")
-    chat_prompt = st.chat_input("Refine this design (e.g. 'Make the floor darker')")
-    if chat_prompt:
-        with st.spinner("Refining..."):
-            new_img, _ = generate_renovation(st.session_state.after, chat_prompt)
-            if new_img:
-                st.session_state.after = new_img
-                st.rerun()
+    
+    # Iterative Chat
+    st.chat_input(
+        "Refine this design (e.g. 'Make the floor darker')", 
+        key="chat_input", 
+        on_submit=run_refinement_callback
+    )
+    
+    # "New Project" Button to reset
+    def reset_app():
+        st.session_state.current_view = 'input'
+        st.session_state.input_img = None
+        st.session_state.result_img = None
+        
+    st.button("🔄 Start New Project", on_click=reset_app, use_container_width=True)
+    
     st.markdown('</div>', unsafe_allow_html=True)
