@@ -1,4 +1,5 @@
-FROM python:3.9-slim
+# Use Python 3.10-slim (Recommended for new SDK)
+FROM python:3.10-slim
 
 WORKDIR /app
 
@@ -12,7 +13,7 @@ COPY . .
 # Expose port 8080
 EXPOSE 8080
 
-# FORCE Streamlit to listen on 8080
+# Run Streamlit on Port 8080
 CMD streamlit run app.py \
     --server.port=8080 \
     --server.address=0.0.0.0 \
