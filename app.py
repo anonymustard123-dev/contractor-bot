@@ -21,21 +21,34 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Custom CSS: Hide Streamlit UI & Fix Mobile Feel
 st.markdown("""
     <style>
-        /* Hide default Streamlit elements */
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
         header {visibility: hidden;}
         [data-testid="stToolbar"] {visibility: hidden;}
         
-        /* Mobile Touch Targets */
         button { min-height: 50px; margin-top: 10px; }
-        
-        /* Reduce the 'Graying Out' effect opacity so it looks less broken */
         .st-emotion-cache-12fmjuu { opacity: 1 !important; }
-        .st-emotion-cache-1y4p8pa { padding-top: 0rem; }
+        
+        /* Custom Styling for the HTML Download Link to look like a Button */
+        .download-btn {
+            display: inline-block;
+            background-color: #0f172a;
+            color: white !important;
+            padding: 12px 24px;
+            text-align: center;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            width: 100%;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-top: 10px;
+        }
+        .download-btn:hover {
+            background-color: #1e293b;
+            color: white !important;
+        }
     </style>
     <link rel="manifest" href="app/static/manifest.json">
     <meta name="apple-mobile-web-app-capable" content="yes">
@@ -52,25 +65,21 @@ IMAGE_MODEL_ID = "gemini-3-pro-image-preview"
 TEXT_MODEL_ID = "gemini-2.0-flash"
 
 # ==========================================
-# 2. STATE MANAGEMENT (Prevents Resets)
+# 2. STATE MANAGEMENT
 # ==========================================
 if 'current_view' not in st.session_state: st.session_state.current_view = 'input'
 if 'input_img' not in st.session_state: st.session_state.input_img = None
 if 'result_img' not in st.session_state: st.session_state.result_img = None
 if 'summary' not in st.session_state: st.session_state.summary = ""
 if 'shop_list' not in st.session_state: st.session_state.shop_list = []
-if 'pdf_data' not in st.session_state: st.session_state.pdf_data = None
+if 'pdf_b64' not in st.session_state: st.session_state.pdf_b64 = None # Store base64 string, not bytes
 
 # ==========================================
-# 3. UTILITY: COMPRESSION (Prevents Crashes)
+# 3. UTILITY FUNCTIONS
 # ==========================================
 def compress_image(image, max_size=(800, 800)):
-    """
-    Aggressively resizes images to prevent Server Memory Errors (OOM) on mobile.
-    """
     img = image.copy()
-    if img.mode != 'RGB':
-        img = img.convert('RGB')
+    if img.mode != 'RGB': img = img.convert('RGB')
     img.thumbnail(max_size, Image.Resampling.LANCZOS)
     return img
 
@@ -112,18 +121,22 @@ def create_pdf_report(before_img, after_img, summary_text, shopping_list):
     doc = SimpleDocTemplate(buffer, pagesize=letter)
     styles = getSampleStyleSheet()
     story = []
+    
     title_style = ParagraphStyle('Title', parent=styles['Heading1'], color=HexColor('#0f172a'), alignment=1, fontSize=24)
     story.append(Paragraph("Renovation Proposal", title_style))
     story.append(Spacer(1, 12))
     story.append(Paragraph("<b>Project Scope:</b>", styles["Heading3"]))
     story.append(Paragraph(summary_text, styles["Normal"]))
     story.append(Spacer(1, 20))
+    
     def prep(img):
         b = io.BytesIO(); img.save(b, format='JPEG'); b.seek(0)
         return RLImage(b, width=250, height=200)
+    
     data = [[prep(before_img), prep(after_img)], [Paragraph("Current Condition", styles["Normal"]), Paragraph("Proposed Design", styles["Normal"])]]
     t = Table(data, colWidths=[260, 260]); t.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'TOP')]))
     story.append(t); story.append(Spacer(1, 25))
+    
     if shopping_list:
         story.append(Paragraph("<b>Suggested Materials (Click to Shop):</b>", styles["Heading3"]))
         for item in shopping_list:
@@ -131,11 +144,16 @@ def create_pdf_report(before_img, after_img, summary_text, shopping_list):
             link_text = f'<link href="{url}" color="blue"><u>{item["item"]}</u></link>'
             story.append(Paragraph(f"• {link_text}", styles["Normal"]))
             story.append(Spacer(1, 5))
-    doc.build(story); buffer.seek(0)
-    return buffer
+            
+    doc.build(story)
+    
+    # Convert buffer to B64 string immediately for HTML link
+    pdf_bytes = buffer.getvalue()
+    b64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
+    return b64_pdf
 
 # ==========================================
-# 4. CALLBACKS (The Logic)
+# 4. CALLBACKS
 # ==========================================
 def handle_upload():
     if st.session_state.uploader:
@@ -151,6 +169,7 @@ def reset_app():
     st.session_state.current_view = 'input'
     st.session_state.input_img = None
     st.session_state.result_img = None
+    st.session_state.pdf_b64 = None
 
 # ==========================================
 # 5. UI RENDER
@@ -172,7 +191,6 @@ if st.session_state.current_view == 'input':
         with c2: st.selectbox("Category", ["Paint","Flooring","Cabinets","Lighting","Full Remodel"], key="cat_input")
         st.text_area("Design Plan:", placeholder="e.g. Modern white oak floors", key="desc_input")
         
-        # GENERATE BUTTON
         if st.button("✨ Generate Proposal", use_container_width=True):
             with st.spinner("🎨 Creating your design..."):
                 r = st.session_state.room_input
@@ -186,7 +204,8 @@ if st.session_state.current_view == 'input':
                     st.session_state.result_img = res
                     st.session_state.summary = generate_smart_summary(r, c, d)
                     st.session_state.shop_list = generate_shopping_list(res)
-                    st.session_state.pdf_data = create_pdf_report(st.session_state.input_img, res, st.session_state.summary, st.session_state.shop_list)
+                    # Generate B64 PDF string immediately
+                    st.session_state.pdf_b64 = create_pdf_report(st.session_state.input_img, res, st.session_state.summary, st.session_state.shop_list)
                     st.session_state.current_view = 'result'
                     st.rerun()
                 elif err:
@@ -207,20 +226,20 @@ elif st.session_state.current_view == 'result':
                 url = f"https://www.google.com/search?q={item['query'].replace(' ', '+')}&tbm=shop"
                 st.markdown(f"- [{item['item']}]({url})")
 
-    if st.session_state.pdf_data:
-        st.download_button(label="📄 Download Proposal PDF", data=st.session_state.pdf_data, file_name="proposal.pdf", mime="application/pdf", use_container_width=True)
+    # CUSTOM HTML DOWNLOAD LINK (THE PWA FIX)
+    if st.session_state.pdf_b64:
+        href = f'<a href="data:application/pdf;base64,{st.session_state.pdf_b64}" download="proposal.pdf" target="_blank" class="download-btn">📄 Download Proposal PDF</a>'
+        st.markdown(href, unsafe_allow_html=True)
     
     st.markdown("---")
     
-    # REFINE INPUT
     chat_input = st.chat_input("Refine this design (e.g. 'Make the floor darker')")
     if chat_input:
         with st.spinner("✨ Refining design..."):
             new_res, err = generate_renovation(st.session_state.result_img, chat_input)
             if new_res:
                 st.session_state.result_img = new_res
-                # Update PDF with new image
-                st.session_state.pdf_data = create_pdf_report(st.session_state.input_img, new_res, st.session_state.summary, st.session_state.shop_list)
+                st.session_state.pdf_b64 = create_pdf_report(st.session_state.input_img, new_res, st.session_state.summary, st.session_state.shop_list)
                 st.rerun()
             elif err:
                 st.error(err)
