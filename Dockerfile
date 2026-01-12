@@ -1,4 +1,4 @@
-# Use Python 3.9-slim (Stable standard)
+# Use Python 3.9-slim
 FROM python:3.9-slim
 
 # Set working directory
@@ -11,10 +11,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy app files
 COPY . .
 
-# Expose port 8080 (The Railway Default)
+# Expose port 8080
 EXPOSE 8080
 
-# Run Streamlit on Port 8080 with all security checks disabled
+# FORCE Streamlit to listen on 8080
 CMD streamlit run app.py \
     --server.port=8080 \
     --server.address=0.0.0.0 \
