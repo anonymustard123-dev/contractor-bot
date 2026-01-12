@@ -5,6 +5,7 @@ from PIL import Image
 import os
 import io
 import base64
+import json
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -20,101 +21,72 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Hide Streamlit Menu & Footer
+# --- PWA & UI OVERRIDES ---
+# 1. Hide Streamlit Chrome
+# 2. Inject PWA Manifest Link (Points to static/manifest.json)
 st.markdown("""
     <style>
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
         header {visibility: hidden;}
         [data-testid="stToolbar"] {visibility: hidden;}
-        .stDeployButton {display:none;}
     </style>
+    <link rel="manifest" href="app/static/manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
 """, unsafe_allow_html=True)
 
 api_key = os.getenv("GOOGLE_API_KEY")
 if not api_key:
-    st.error("⚠️ API Key missing. Please check your system variables.")
+    st.error("⚠️ API Key missing.")
     st.stop()
 
 client = genai.Client(api_key=api_key)
 
-# Dual Model Setup
-IMAGE_MODEL_ID = "gemini-3-pro-image-preview"  # For Rendering
-TEXT_MODEL_ID = "gemini-2.0-flash"             # For Summaries
+IMAGE_MODEL_ID = "gemini-3-pro-image-preview"
+TEXT_MODEL_ID = "gemini-2.0-flash"
 
 # ==========================================
-# 2. UI STYLING
+# 2. LOGIC: GENERATION & SHOPPING
 # ==========================================
-st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
-    
-    :root { --primary: #000000; --text: #1a1a1a; --bg: #ffffff; }
-    .stApp { background-color: var(--bg); font-family: 'Inter', sans-serif; color: var(--text); }
-    
-    .room-card { 
-        background: white; 
-        border: 1px solid #e5e7eb; 
-        border-radius: 12px; 
-        padding: 24px; 
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); 
-        margin-bottom: 20px; 
-    }
-    
-    .header-text h1 {
-        font-weight: 700;
-        letter-spacing: -0.02em;
-        margin-bottom: 0;
-        color: #111;
-    }
-    
-    div.stButton > button { 
-        background-color: #0f172a !important; 
-        color: white !important; 
-        border-radius: 8px !important; 
-        height: 50px !important; 
-        font-weight: 600 !important; 
-        width: 100%; 
-        border: none !important;
-    }
-    div.stButton > button:hover {
-        background-color: #1e293b !important;
-    }
-</style>
-""", unsafe_allow_html=True)
 
-# ==========================================
-# 3. LOGIC: GENERATION & EDITING
-# ==========================================
+def generate_shopping_list(input_image):
+    """
+    Identifies materials and returns a JSON list for monetization.
+    """
+    prompt = """
+    Analyze this interior design image. Identify the 3 main visible materials or fixtures 
+    (e.g., 'White Oak Flooring', 'Matte Black Sconce', 'Carrara Marble Counter').
+    
+    Return ONLY a raw JSON object with this exact structure:
+    [
+        {"item": "Material Name", "query": "buy Material Name online"},
+        {"item": "Material Name 2", "query": "buy Material Name 2 online"},
+        {"item": "Material Name 3", "query": "buy Material Name 3 online"}
+    ]
+    """
+    try:
+        response = client.models.generate_content(
+            model=TEXT_MODEL_ID,
+            contents=[input_image, prompt],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json" # Forces valid JSON output
+            )
+        )
+        return json.loads(response.text)
+    except:
+        return []
 
 def generate_smart_summary(room_type, category, user_description):
-    """ Writes a professional summary using Gemini Flash """
-    prompt = f"""
-    Act as a professional interior designer. 
-    Write a 1-sentence summary of this renovation project for a client report.
-    Room: {room_type} | Category: {category} | Details: {user_description}
-    Output ONLY the summary sentence.
-    """
+    prompt = f"Act as an interior designer. Summarize this {room_type} {category} project in one professional sentence. User notes: {user_description}"
     try:
         response = client.models.generate_content(model=TEXT_MODEL_ID, contents=prompt)
         return response.text.strip()
     except:
-        return f"Renovation of {room_type} featuring updates to {category}."
+        return f"Renovation of {room_type} updating {category}."
 
 def generate_renovation(input_image, prompt_text):
-    """ 
-    Generic Generation Function (Used for both initial Create and Iterative Edit)
-    """
-    full_prompt = f"""
-    Act as a professional architectural visualizer.
-    Task: Edit the attached image according to this request: {prompt_text}
-    
-    STRICT CONSTRAINTS:
-    1. Maintain exact camera angle, perspective, and room geometry.
-    2. Do not hallucinate new windows, doors, or structural elements.
-    3. Output a high-fidelity photorealistic image.
-    """
-    
+    full_prompt = f"Act as an architectural visualizer. Edit the image: {prompt_text}. Maintain geometry. Photorealistic."
     try:
         response = client.models.generate_content(
             model=IMAGE_MODEL_ID,
@@ -124,36 +96,33 @@ def generate_renovation(input_image, prompt_text):
                 temperature=0.7,
             )
         )
-        
         if response.candidates:
             for part in response.candidates[0].content.parts:
                 if part.inline_data:
                     raw_data = part.inline_data.data
-                    if isinstance(raw_data, bytes):
-                        img_data = raw_data
-                    else:
-                        img_data = base64.b64decode(raw_data)
+                    img_data = raw_data if isinstance(raw_data, bytes) else base64.b64decode(raw_data)
                     return Image.open(io.BytesIO(img_data)), None
-                
-        return None, "System processed the request but returned no visual data."
-
+        return None, "No visual data returned."
     except Exception as e:
-        return None, f"Visualization Error: {str(e)}"
+        return None, str(e)
 
-def create_pdf_report(before_img, after_img, summary_text):
+def create_pdf_report(before_img, after_img, summary_text, shopping_list):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter)
     styles = getSampleStyleSheet()
     story = []
 
+    # Title
     title_style = ParagraphStyle('Title', parent=styles['Heading1'], color=HexColor('#0f172a'), alignment=1, fontSize=24)
     story.append(Paragraph("Renovation Proposal", title_style))
-    story.append(Spacer(1, 20))
+    story.append(Spacer(1, 12))
 
+    # Summary
     story.append(Paragraph("<b>Project Scope:</b>", styles["Heading3"]))
     story.append(Paragraph(summary_text, styles["Normal"]))
-    story.append(Spacer(1, 24))
+    story.append(Spacer(1, 20))
 
+    # Images
     def prep(img):
         b = io.BytesIO()
         img.save(b, format='JPEG')
@@ -164,117 +133,103 @@ def create_pdf_report(before_img, after_img, summary_text):
             [Paragraph("Current Condition", styles["Normal"]), Paragraph("Proposed Design", styles["Normal"])]]
     
     t = Table(data, colWidths=[260, 260])
-    t.setStyle(TableStyle([
-        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ('VALIGN', (0,0), (-1,-1), 'TOP'),
-        ('topPadding', (0,0), (-1,-1), 10)
-    ]))
+    t.setStyle(TableStyle([('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'TOP')]))
     story.append(t)
-    story.append(Spacer(1, 40))
-    footer_style = ParagraphStyle('Footer', parent=styles['Normal'], fontSize=8, textColor=HexColor('#94a3b8'), alignment=1)
-    story.append(Paragraph("Generated by Room Visualizer AI", footer_style))
+    story.append(Spacer(1, 25))
+
+    # --- SHOPPING LIST (MONETIZATION) ---
+    if shopping_list:
+        story.append(Paragraph("<b>Suggested Materials (Click to Shop):</b>", styles["Heading3"]))
+        for item in shopping_list:
+            # Create a clickable Wayfair/Google Shopping search link
+            query = item['query'].replace(" ", "+")
+            url = f"https://www.google.com/search?q={query}&tbm=shop"
+            
+            # ReportLab XML Link Syntax
+            link_text = f'<link href="{url}" color="blue"><u>{item["item"]}</u></link>'
+            story.append(Paragraph(f"• {link_text}", styles["Normal"]))
+            story.append(Spacer(1, 5))
 
     doc.build(story)
     buffer.seek(0)
     return buffer
 
 # ==========================================
-# 4. INTERFACE
+# 3. INTERFACE
 # ==========================================
-st.markdown('<div class="header-text" style="text-align: center; margin-bottom: 30px;"><h1>🏠 Room Visualizer</h1><p style="color:#666;">Professional Renovation Proposals</p></div>', unsafe_allow_html=True)
+st.markdown('<div class="header-text" style="text-align: center; margin-bottom: 20px;"><h1>🏠 Room Visualizer</h1></div>', unsafe_allow_html=True)
 
-# --- 1. IMAGE INPUT SECTION ---
+# --- INPUTS ---
 st.markdown('<div class="room-card">', unsafe_allow_html=True)
-
-# Tabs for Upload vs Camera
-tab1, tab2 = st.tabs(["📂 Upload Photo", "📸 Take Photo"])
+tab1, tab2 = st.tabs(["📂 Upload", "📸 Camera"])
 input_image = None
 
 with tab1:
-    uploaded_file = st.file_uploader("Upload Image", type=['jpg', 'png', 'jpeg'], label_visibility="collapsed")
-    if uploaded_file:
-        input_image = Image.open(uploaded_file)
-
+    u_file = st.file_uploader("Upload", type=['jpg', 'png', 'jpeg'], label_visibility="collapsed")
+    if u_file: input_image = Image.open(u_file)
 with tab2:
-    camera_file = st.camera_input("Take a picture")
-    if camera_file:
-        input_image = Image.open(camera_file)
+    c_file = st.camera_input("Take Photo")
+    if c_file: input_image = Image.open(c_file)
 
 if input_image:
-    st.image(input_image, caption="Selected Site Photo", width=300)
-
+    st.image(input_image, caption="Site Photo", width=300)
 st.markdown('</div>', unsafe_allow_html=True)
 
-# --- 2. DETAILS & GENERATION ---
 if input_image:
     st.markdown('<div class="room-card">', unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1: room = st.selectbox("Room", ["Living Room", "Kitchen", "Bathroom", "Bedroom", "Patio"])
+    with c2: cat = st.selectbox("Category", ["Paint", "Flooring", "Cabinets", "Lighting", "Full Remodel"])
     
-    col1, col2 = st.columns(2)
-    with col1: room_type = st.selectbox("Room", ["Living Room", "Kitchen", "Bathroom", "Bedroom", "Patio"])
-    with col2: category = st.selectbox("Update", ["Paint/Walls", "Flooring", "Cabinets", "Lighting", "Full Remodel"])
-
-    desc = st.text_area("Initial Design Plan:", placeholder="e.g. Change the white walls to a moody charcoal black.")
+    desc = st.text_area("Design Plan:", placeholder="e.g. Modern white oak floors")
     
     if st.button("✨ Generate Proposal"):
-        with st.spinner("Analyzing geometry and rendering design..."):
+        with st.spinner("Designing & Sourcing Materials..."):
+            prompt = f"Renovate {room}. Update {cat}. Details: {desc}"
             
-            # Combine inputs into a single prompt string
-            initial_prompt = f"Renovate this {room_type}. Update the {category}. Details: {desc}"
+            # 1. Generate Image
+            res_img, err = generate_renovation(input_image, prompt)
             
-            result_image, error = generate_renovation(input_image, initial_prompt)
-            
-            if error:
-                st.error(error)
-            elif result_image:
-                smart_summary = generate_smart_summary(room_type, category, desc)
+            if res_img:
+                # 2. Generate Summary & Shopping List (Parallel-ish)
+                summ = generate_smart_summary(room, cat, desc)
+                shop_list = generate_shopping_list(res_img) # Pass the NEW image to identify new materials
                 
-                # Save to session state
                 st.session_state.before = input_image
-                st.session_state.after = result_image
-                st.session_state.summary = smart_summary
-                st.session_state.history = [] # Reset history on new generation
+                st.session_state.after = res_img
+                st.session_state.summary = summ
+                st.session_state.shop = shop_list
                 st.session_state.done = True
-                st.rerun() # Force refresh to show results
-
+                st.rerun()
+            elif err:
+                st.error(err)
     st.markdown('</div>', unsafe_allow_html=True)
 
-# --- 3. RESULTS & ITERATIVE EDITING ---
+# --- RESULTS ---
 if st.session_state.get('done'):
     st.markdown('<div class="room-card">', unsafe_allow_html=True)
-    st.write("### Design Result")
+    st.write("### Proposal")
     
-    c1, c2 = st.columns(2)
-    with c1: st.image(st.session_state.before, caption="Original", use_container_width=True)
-    with c2: st.image(st.session_state.after, caption="Proposed Design", use_container_width=True)
+    col1, col2 = st.columns(2)
+    with col1: st.image(st.session_state.before, caption="Before", use_container_width=True)
+    with c2: st.image(st.session_state.after, caption="After", use_container_width=True)
     
-    st.info(f"**Project Summary:** {st.session_state.summary}")
-    
-    # PDF Download
-    pdf_bytes = create_pdf_report(st.session_state.before, st.session_state.after, st.session_state.summary)
-    st.download_button("📄 Download PDF Report", pdf_bytes, "proposal.pdf", "application/pdf", use_container_width=True)
+    # Display Shopping List UI
+    if st.session_state.shop:
+        st.write("#### 🛒 Material List")
+        for item in st.session_state.shop:
+            url = f"https://www.google.com/search?q={item['query'].replace(' ', '+')}&tbm=shop"
+            st.markdown(f"- [{item['item']}]({url})")
+
+    pdf_data = create_pdf_report(st.session_state.before, st.session_state.after, st.session_state.summary, st.session_state.shop)
+    st.download_button("📄 Download PDF (with Links)", pdf_data, "proposal.pdf", "application/pdf", use_container_width=True)
     
     st.markdown("---")
-    
-    # --- ITERATIVE CHAT INTERFACE ---
-    st.write("### 💬 Refine Design")
-    st.write("Not quite right? Chat with the visualizer to make tweaks.")
-    
-    # Chat Input for Refinement
-    refinement_prompt = st.chat_input("e.g. 'Make the floor darker' or 'Change the wall color to sage green'")
-    
-    if refinement_prompt:
-        with st.spinner(f"Refining design: '{refinement_prompt}'..."):
-            # CRITICAL: We pass the *current result* (st.session_state.after) as the input image
-            # This allows "stacking" edits (Image -> Edit 1 -> Edit 2)
-            new_result, edit_error = generate_renovation(st.session_state.after, refinement_prompt)
-            
-            if edit_error:
-                st.error(edit_error)
-            elif new_result:
-                # Update the 'After' image to the new version
-                st.session_state.after = new_result
-                # Update summary slightly to reflect latest edit
-                st.session_state.summary += f" (Revision: {refinement_prompt})"
+    chat_prompt = st.chat_input("Refine this design (e.g. 'Make the floor darker')")
+    if chat_prompt:
+        with st.spinner("Refining..."):
+            new_img, _ = generate_renovation(st.session_state.after, chat_prompt)
+            if new_img:
+                st.session_state.after = new_img
                 st.rerun()
-
     st.markdown('</div>', unsafe_allow_html=True)
