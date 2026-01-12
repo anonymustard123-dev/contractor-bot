@@ -31,23 +31,27 @@ st.markdown("""
         button { min-height: 50px; margin-top: 10px; }
         .st-emotion-cache-12fmjuu { opacity: 1 !important; }
         
-        /* Custom Styling for the HTML Download Link to look like a Button */
-        .download-btn {
-            display: inline-block;
+        /* PDF Preview Container */
+        .pdf-preview {
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            width: 100%;
+            height: 500px;
+            margin-top: 20px;
+        }
+        
+        /* Mobile-Friendly Save Button */
+        .save-btn {
+            display: block;
             background-color: #0f172a;
             color: white !important;
-            padding: 12px 24px;
+            padding: 15px;
             text-align: center;
             text-decoration: none;
             border-radius: 8px;
-            font-weight: 600;
-            width: 100%;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            font-weight: bold;
             margin-top: 10px;
-        }
-        .download-btn:hover {
-            background-color: #1e293b;
-            color: white !important;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         }
     </style>
     <link rel="manifest" href="app/static/manifest.json">
@@ -72,7 +76,7 @@ if 'input_img' not in st.session_state: st.session_state.input_img = None
 if 'result_img' not in st.session_state: st.session_state.result_img = None
 if 'summary' not in st.session_state: st.session_state.summary = ""
 if 'shop_list' not in st.session_state: st.session_state.shop_list = []
-if 'pdf_b64' not in st.session_state: st.session_state.pdf_b64 = None # Store base64 string, not bytes
+if 'pdf_b64' not in st.session_state: st.session_state.pdf_b64 = None 
 
 # ==========================================
 # 3. UTILITY FUNCTIONS
@@ -147,7 +151,6 @@ def create_pdf_report(before_img, after_img, summary_text, shopping_list):
             
     doc.build(story)
     
-    # Convert buffer to B64 string immediately for HTML link
     pdf_bytes = buffer.getvalue()
     b64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
     return b64_pdf
@@ -204,7 +207,6 @@ if st.session_state.current_view == 'input':
                     st.session_state.result_img = res
                     st.session_state.summary = generate_smart_summary(r, c, d)
                     st.session_state.shop_list = generate_shopping_list(res)
-                    # Generate B64 PDF string immediately
                     st.session_state.pdf_b64 = create_pdf_report(st.session_state.input_img, res, st.session_state.summary, st.session_state.shop_list)
                     st.session_state.current_view = 'result'
                     st.rerun()
@@ -226,9 +228,17 @@ elif st.session_state.current_view == 'result':
                 url = f"https://www.google.com/search?q={item['query'].replace(' ', '+')}&tbm=shop"
                 st.markdown(f"- [{item['item']}]({url})")
 
-    # CUSTOM HTML DOWNLOAD LINK (THE PWA FIX)
+    # --- PWA PDF FIX ---
     if st.session_state.pdf_b64:
-        href = f'<a href="data:application/pdf;base64,{st.session_state.pdf_b64}" download="proposal.pdf" target="_blank" class="download-btn">📄 Download Proposal PDF</a>'
+        st.write("### 📄 Proposal Report")
+        
+        # 1. Embed PDF directly (So they see it instantly without leaving)
+        pdf_display = f'<iframe src="data:application/pdf;base64,{st.session_state.pdf_b64}" class="pdf-preview"></iframe>'
+        st.markdown(pdf_display, unsafe_allow_html=True)
+        
+        # 2. Save Button (WITHOUT target="_blank" to prevent crashing)
+        # We use the 'download' attribute which hints iOS to save the file
+        href = f'<a href="data:application/pdf;base64,{st.session_state.pdf_b64}" download="proposal.pdf" class="save-btn">💾 Save PDF to Files</a>'
         st.markdown(href, unsafe_allow_html=True)
     
     st.markdown("---")
