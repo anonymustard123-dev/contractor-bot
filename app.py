@@ -5,10 +5,12 @@ from PIL import Image
 import os
 import io
 import requests
+import base64
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
+from reportlab.lib.colors import HexColor  # <--- FIX: Correct import for PDF colors
 
 # ==========================================
 # 1. SETUP & CONFIG
@@ -21,8 +23,6 @@ st.set_page_config(
 )
 
 # 🔑 API KEYS
-# We use Gemini for VISION (Understanding the room)
-# We use Replicate for RENDERING (Drawing the new room)
 google_key = os.getenv("GOOGLE_API_KEY")
 replicate_key = os.getenv("REPLICATE_API_TOKEN")
 
@@ -85,13 +85,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. LOGIC: HYBRID ENGINE
+# 3. LOGIC: DEPTH-AWARE ENGINE
 # ==========================================
 
 def get_architectural_prompt(input_image, room_type, category, user_description):
     """
     STEP 1: Use Google Gemini 1.5 Flash to analyze the image and write a prompt.
-    This model is CHEAP and FAST. It acts as the "Architect".
     """
     model = genai.GenerativeModel('gemini-1.5-flash')
     
@@ -114,26 +113,27 @@ def get_architectural_prompt(input_image, room_type, category, user_description)
     except Exception as e:
         return f"A photorealistic {room_type} with {user_description}"
 
-def generate_render(prompt, input_image):
+def generate_depth_render(prompt, input_image):
     """
-    STEP 2: Use Replicate (Flux-Schnell) to generate the image.
-    We use 'img2img' (Image-to-Image) to keep the original structure.
+    STEP 2: Use Replicate (Flux Depth Dev) to generate the image.
+    We use 'control_image' (Depth Map) to keep the original structure strictly locked.
     """
-    # Convert PIL image to byte stream
-    buf = io.BytesIO()
-    input_image.save(buf, format="JPEG")
-    buf.seek(0)
+    # Convert PIL image to base64 for Replicate (Required for Depth models)
+    buffered = io.BytesIO()
+    input_image.save(buffered, format="JPEG")
+    img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+    data_uri = f"data:image/jpeg;base64,{img_str}"
     
     try:
-        # We use Flux-Schnell because it is the fastest high-quality model available.
+        # We use Flux-Depth-Dev because it understands 3D space
         output = replicate.run(
-            "black-forest-labs/flux-schnell",
+            "black-forest-labs/flux-depth-dev",
             input={
                 "prompt": prompt,
-                "image": buf,  # <-- We pass the original image here!
-                "strength": 0.80, # 0.80 means "Keep 20% original structure, change 80% style"
-                "guidance_scale": 3.5,
-                "num_inference_steps": 4, # Schnell is fast!
+                "control_image": data_uri, # This locks the walls/furniture in place
+                "strength": 0.85, 
+                "guidance": 10,
+                "num_inference_steps": 28, 
                 "output_format": "jpg"
             }
         )
@@ -148,14 +148,15 @@ def generate_render(prompt, input_image):
         return None, str(e)
 
 def create_pdf_report(before_img, after_img, summary_text):
-    """ Generates PDF Report """
+    """ Generates PDF Report with Fixed Color Logic """
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=18)
     styles = getSampleStyleSheet()
     story = []
 
-    styles.add(ParagraphStyle(name='MainTitle', parent=styles['Heading1'], alignment=1, spaceAfter=20, fontSize=18, color=colors.hexof('#1e293b')))
-    story.append(Paragraph("Renovation Proposal", styles['MainTitle']))
+    # <--- FIX: Use HexColor explicitly here --->
+    title_style = ParagraphStyle('MainTitle', parent=styles['Heading1'], alignment=1, spaceAfter=20, fontSize=18, textColor=HexColor('#1e293b'))
+    story.append(Paragraph("Renovation Proposal", title_style))
 
     story.append(Paragraph("Project Summary", styles['Heading2']))
     story.append(Paragraph(summary_text, styles["Normal"]))
@@ -188,7 +189,7 @@ def create_pdf_report(before_img, after_img, summary_text):
 st.markdown("""
 <div class="header-text" style="text-align: center; margin-bottom: 30px;">
     <h1>🏗️ Contractor AI Pro</h1>
-    <p>Powered by Gemini (Vision) + Flux (Rendering)</p>
+    <p>Powered by Gemini (Vision) + Flux (Depth Control)</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -212,9 +213,9 @@ if uploaded_file and user_description:
             # Step 1: Get prompt from Google
             design_prompt = get_architectural_prompt(input_image, room_type, category, user_description)
             
-        with st.spinner("2/2: Rendering Proposal (Flux)..."):
+        with st.spinner("2/2: Rendering Proposal (Flux Depth)..."):
             # Step 2: Generate image with Replicate
-            result_image, error = generate_render(design_prompt, input_image)
+            result_image, error = generate_depth_render(design_prompt, input_image)
             
             if error:
                 st.error(f"Rendering Error: {error}")
