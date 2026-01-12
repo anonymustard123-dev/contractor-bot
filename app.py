@@ -25,10 +25,10 @@ if not api_key:
     st.error("⚠️ API Key missing. Please check your system variables.")
     st.stop()
 
-# Initialize the v1 Client
+# Initialize Client
 client = genai.Client(api_key=api_key)
 
-# The "Nano Banana Pro" Model ID
+# The Gemini 3 Model ID
 MODEL_ID = "gemini-3-pro-image-preview"
 
 # ==========================================
@@ -46,13 +46,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. LOGIC: GEMINI 3 GENERATION
+# 3. LOGIC: GENERATION
 # ==========================================
 
 def generate_renovation(input_image, room_type, category, user_description):
     """
-    Calls Gemini 3 Pro Image.
-    Fixes the 'Part.from_text' error by using the direct list format.
+    Calls Gemini 3 Pro with robust image decoding.
     """
     
     prompt_text = f"""
@@ -67,35 +66,38 @@ def generate_renovation(input_image, room_type, category, user_description):
     """
     
     try:
-        # Call the model
         response = client.models.generate_content(
             model=MODEL_ID,
-            # SDK v1 automatically handles list of [Image, str]
             contents=[input_image, prompt_text],
             config=types.GenerateContentConfig(
-                # Explicitly request Image output
                 response_modalities=["TEXT", "IMAGE"],
                 temperature=0.7,
             )
         )
         
-        # Parse Response
         if response.candidates:
             for part in response.candidates[0].content.parts:
-                # Check for inline image bytes
                 if part.inline_data:
-                    img_data = base64.b64decode(part.inline_data.data)
+                    # --- FIX START ---
+                    # Check if data is already bytes (New SDK behavior) or string (Old behavior)
+                    raw_data = part.inline_data.data
+                    
+                    if isinstance(raw_data, bytes):
+                        # If it's already bytes, use it directly
+                        img_data = raw_data
+                    else:
+                        # If it's a string, decode it
+                        img_data = base64.b64decode(raw_data)
+                        
                     return Image.open(io.BytesIO(img_data)), None
+                    # --- FIX END ---
                 
-        return None, "Gemini 3 thought about it but returned no image. Try a clearer prompt."
+        return None, "Gemini processed the request but returned no visual data."
 
     except Exception as e:
-        # Better Error Handling
         err_msg = str(e)
         if "404" in err_msg:
-            return None, f"Model Not Found: Your API key might not have access to '{MODEL_ID}' yet."
-        if "429" in err_msg:
-            return None, "Quota Exceeded: You need to enable billing in Google Cloud Console."
+            return None, f"Model ID Error: '{MODEL_ID}' not found. Check your API access."
         return None, f"Gemini 3 Error: {err_msg}"
 
 def create_pdf_report(before_img, after_img, summary_text):
