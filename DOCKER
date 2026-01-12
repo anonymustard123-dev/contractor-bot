@@ -1,0 +1,21 @@
+# Use a lightweight Python version
+FROM python:3.10-slim
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Copy the requirements file first (for better caching)
+COPY requirements.txt .
+
+# Install dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the rest of your app code
+COPY . .
+
+# Expose the port Railway will use
+EXPOSE 8501
+
+# Command to run the app
+# Railway automatically assigns a PORT env var, so we pass it to Streamlit
+CMD streamlit run app.py --server.port=$PORT --server.address=0.0.0.0
