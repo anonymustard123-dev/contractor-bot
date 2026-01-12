@@ -1,21 +1,24 @@
-# Use a lightweight Python version
-FROM python:3.10-slim
+# Use Python 3.9 (slightly more stable for Streamlit than 3.10)
+FROM python:3.9-slim
 
-# Set the working directory in the container
+# Set working directory
 WORKDIR /app
 
-# Copy the requirements file
-COPY requirements.txt .
-
 # Install dependencies
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of your app code
+# Copy app files
 COPY . .
 
-# Expose the port explicitly
+# Expose the port
 EXPOSE 8501
 
-# Command to run the app
-# CHANGE: We are hardcoding 8501 here to ensure it matches your Railway settings
-CMD streamlit run app.py --server.port=8501 --server.address=0.0.0.0
+# Run Streamlit with "Nuclear" settings (Headless + No Security Checks)
+# This prevents it from hanging behind the Railway proxy
+CMD streamlit run app.py \
+    --server.port=8501 \
+    --server.address=0.0.0.0 \
+    --server.headless=true \
+    --server.enableCORS=false \
+    --server.enableXsrfProtection=false
