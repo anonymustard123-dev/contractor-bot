@@ -40,7 +40,7 @@ st.markdown("""
             margin-top: 20px;
         }
         
-        /* Mobile-Friendly Save Button */
+        /* Save Button Styling */
         .save-btn {
             display: block;
             background-color: #0f172a;
@@ -228,17 +228,19 @@ elif st.session_state.current_view == 'result':
                 url = f"https://www.google.com/search?q={item['query'].replace(' ', '+')}&tbm=shop"
                 st.markdown(f"- [{item['item']}]({url})")
 
-    # --- PWA PDF FIX ---
+    # --- IOS PWA FIX ---
     if st.session_state.pdf_b64:
         st.write("### 📄 Proposal Report")
         
-        # 1. Embed PDF directly (So they see it instantly without leaving)
+        # 1. VISUAL PREVIEW: Use an iframe to show the PDF right on screen
+        # This solves the "Can't escape" issue because you never leave the app.
         pdf_display = f'<iframe src="data:application/pdf;base64,{st.session_state.pdf_b64}" class="pdf-preview"></iframe>'
         st.markdown(pdf_display, unsafe_allow_html=True)
         
-        # 2. Save Button (WITHOUT target="_blank" to prevent crashing)
-        # We use the 'download' attribute which hints iOS to save the file
-        href = f'<a href="data:application/pdf;base64,{st.session_state.pdf_b64}" download="proposal.pdf" class="save-btn">💾 Save PDF to Files</a>'
+        # 2. SAVE BUTTON: The "Octet-Stream" Hack
+        # Changing the type from 'application/pdf' to 'application/octet-stream'
+        # tricks iOS into treating it as a raw file download, forcing the "Save to Files" dialog.
+        href = f'<a href="data:application/octet-stream;base64,{st.session_state.pdf_b64}" download="proposal.pdf" class="save-btn">💾 Save PDF to Device</a>'
         st.markdown(href, unsafe_allow_html=True)
     
     st.markdown("---")
